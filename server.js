@@ -11,6 +11,8 @@ const {
   applyRepair,
   buildCsv,
   buildProofHtml,
+  planReprint,
+  buildReprintProofHtml,
 } = require('./src/imposition');
 
 const app = express();
@@ -114,6 +116,38 @@ app.post('/api/export/proof', (req, res) => {
     : `imposition-proof-${req.body.totalPages}p.html`;
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.send(html);
+});
+
+/** 补印清单：校验页码表达式与当前拼版，按版位反查实体纸张（同张纸命中多页只列一次） */
+app.post('/api/reprint/plan', (req, res) => {
+  const body = req.body || {};
+  const result = planReprint(body.state, body.pages);
+  if (!result) {
+    return res.status(400).json({ error: '拼版数据格式不正确' });
+  }
+  if (result.error) {
+    return res.status(400).json({ error: result.error, errors: result.errors });
+  }
+  res.json(result);
+});
+
+/** 补印打样：仅含清单纸张的双面打样（正反面成对、短边翻转镜像、沿用爬移参数）；有错时拒绝下载 */
+app.post('/api/reprint/proof', (req, res) => {
+  const body = req.body || {};
+  const result = buildReprintProofHtml(body.state, body.pages);
+  if (!result) {
+    return res.status(400).json({ error: '拼版数据格式不正确' });
+  }
+  if (result.error) {
+    return res.status(400).json({ error: result.error, errors: result.errors });
+  }
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  const st = body.state;
+  const filename = st.signatures
+    ? `imposition-reprint-proof-${st.totalPages}p-${st.signatureCount}sig.html`
+    : `imposition-reprint-proof-${st.totalPages}p.html`;
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(result.html);
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));

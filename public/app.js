@@ -24,6 +24,12 @@ const els = {
   repairSteps: document.getElementById('repairSteps'),
   applyRepairBtn: document.getElementById('applyRepairBtn'),
   discardRepairBtn: document.getElementById('discardRepairBtn'),
+  reprintCard: document.getElementById('reprintCard'),
+  reprintPagesInput: document.getElementById('reprintPagesInput'),
+  reprintPlanBtn: document.getElementById('reprintPlanBtn'),
+  reprintInfo: document.getElementById('reprintInfo'),
+  reprintList: document.getElementById('reprintList'),
+  reprintProofBtn: document.getElementById('reprintProofBtn'),
   summary: document.getElementById('summary'),
   sheets: document.getElementById('sheets'),
   errors: document.getElementById('errors'),
@@ -46,6 +52,7 @@ let mode = 'swap'; // 操作模式：'swap' | 'edit'
 let selected = null; // 交换模式下已选中的版位 { sig, sheet, side, pos }
 let validateTimer = null;
 let repairPlan = null; // 当前修复方案 { steps, fingerprint, baseJson, stale }
+let reprintResult = null; // 当前补印清单（服务端响应 + 生成时的页码表达式）
 
 async function api(path, body) {
   const res = await fetch(path, {
@@ -101,6 +108,8 @@ function setLayout(next) {
     original = null;
     selected = null;
     discardRepairPlan();
+    invalidateReprint();
+    els.reprintCard.hidden = true;
     els.sheets.innerHTML = '';
     els.emptyTip.hidden = false;
     els.nestTip.hidden = true;
@@ -143,6 +152,7 @@ async function generate() {
     original = structuredClone(data);
     selected = null;
     discardRepairPlan();
+    invalidateReprint();
     render();
     scheduleValidate();
   } catch (e) {
@@ -155,6 +165,7 @@ function reset() {
   state = structuredClone(original);
   selected = null;
   discardRepairPlan();
+  invalidateReprint();
   render();
   scheduleValidate();
 }
@@ -194,6 +205,7 @@ function render() {
 
   els.resetBtn.disabled = false;
   els.repairPlanBtn.disabled = false;
+  els.reprintCard.hidden = false;
   updateModeUI();
 }
 
@@ -331,6 +343,7 @@ function onSlotClick(ref, el) {
   render();
   scheduleValidate();
   markRepairStaleIfChanged();
+  invalidateReprint();
 }
 
 function openEditor(ref, el) {
@@ -368,6 +381,7 @@ function openEditor(ref, el) {
     render();
     scheduleValidate();
     markRepairStaleIfChanged();
+    invalidateReprint();
   };
   okBtn.addEventListener('click', () => {
     const raw = input.value.trim();
@@ -613,6 +627,7 @@ async function applyRepairPlan() {
     state = data.state;
     selected = null;
     discardRepairPlan();
+    invalidateReprint();
     render();
     validateNow();
   } catch (e) {
@@ -624,15 +639,106 @@ async function applyRepairPlan() {
   }
 }
 
+/* ---------- 补印 ---------- */
+
+/** 拼版被改动后使当前补印清单失效：禁止下载并提示重新生成 */
+function invalidateReprint() {
+  const had = reprintResult !== null;
+  reprintResult = null;
+  els.reprintProofBtn.disabled = true;
+  els.reprintList.innerHTML = '';
+  els.reprintInfo.innerHTML = had
+    ? '<p class="muted">拼版已改动，请重新生成补印清单。</p>'
+    : '';
+}
+
+/** 生成补印清单：服务端校验页码表达式与当前拼版，按版位反查实体纸张 */
+async function generateReprintList() {
+  if (!state) return;
+  const pagesText = els.reprintPagesInput.value;
+  try {
+    const data = await api('/api/reprint/plan', { state, pages: pagesText });
+    reprintResult = { ...data, pagesText };
+    renderReprint();
+  } catch (e) {
+    reprintResult = null;
+    els.reprintList.innerHTML = '';
+    els.reprintInfo.innerHTML = '';
+    const p = document.createElement('p');
+    p.className = 'reprint-error';
+    p.textContent = e.message;
+    els.reprintInfo.appendChild(p);
+    els.reprintProofBtn.disabled = true;
+  }
+}
+
+function renderReprint() {
+  els.reprintInfo.innerHTML = '';
+  els.reprintList.innerHTML = '';
+  if (!reprintResult) {
+    els.reprintProofBtn.disabled = true;
+    return;
+  }
+  const info = document.createElement('p');
+  info.className = 'reprint-ok';
+  info.textContent =
+    `补印页码：${reprintResult.hitPages.join('、')} ｜ 共 ${reprintResult.sheetCount} 张纸，正反面成对保留。`;
+  els.reprintInfo.appendChild(info);
+
+  for (const item of reprintResult.sheets) {
+    const li = document.createElement('li');
+    li.className = 'reprint-item';
+    const head = document.createElement('div');
+    head.className = 'reprint-item-head';
+    const where = item.sig == null ? `第 ${item.index} 张纸` : `第 ${item.sig} 帖 · 第 ${item.index} 张纸`;
+    const strong = document.createElement('strong');
+    strong.textContent = where;
+    const hit = document.createElement('span');
+    hit.className = 'hit';
+    hit.textContent = `命中页：${item.hitPages.join('、')}`;
+    head.append(strong, hit);
+    li.appendChild(head);
+    for (const side of ['front', 'back']) {
+      const line = document.createElement('div');
+      line.className = 'reprint-face';
+      line.textContent =
+        `${SIDE_LABEL[side]}：左版 ${valueLabel(item[side].left)} · 右版 ${valueLabel(item[side].right)}`;
+      li.appendChild(line);
+    }
+    if (typeof item.creep === 'number') {
+      const creep = document.createElement('div');
+      creep.className = 'reprint-creep';
+      creep.textContent =
+        `爬移补偿 ${item.creep.toFixed(2)} mm（左版 +${item.creep.toFixed(2)} · 右版 −${item.creep.toFixed(2)}）`;
+      li.appendChild(creep);
+    }
+    els.reprintList.appendChild(li);
+  }
+  els.reprintProofBtn.disabled = false;
+}
+
+function downloadReprintProof() {
+  if (!state || !reprintResult) return;
+  const filename = layout === 'multi'
+    ? `imposition-reprint-proof-${state.totalPages}p-${state.signatureCount}sig.html`
+    : `imposition-reprint-proof-${state.totalPages}p.html`;
+  return downloadResult(
+    '/api/reprint/proof',
+    { state, pages: reprintResult.pagesText },
+    filename,
+    '补印打样下载失败'
+  );
+}
+
 /* ---------- 导出 ---------- */
 
 /** 下载结果文件（CSV / 打样 HTML）的通用逻辑 */
-async function downloadResult(path, filename, errorLabel) {
+async function downloadResult(path, body, filename, errorLabel) {
   if (!state) return;
   const res = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(state),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -654,14 +760,14 @@ function exportCsv() {
   const filename = layout === 'multi'
     ? `imposition-${state.totalPages}p-${state.signatureCount}sig.csv`
     : `imposition-${state.totalPages}p.csv`;
-  return downloadResult('/api/export', filename, '导出失败');
+  return downloadResult('/api/export', state, filename, '导出失败');
 }
 
 function downloadProof() {
   const filename = layout === 'multi'
     ? `imposition-proof-${state.totalPages}p-${state.signatureCount}sig.html`
     : `imposition-proof-${state.totalPages}p.html`;
-  return downloadResult('/api/export/proof', filename, '打样下载失败');
+  return downloadResult('/api/export/proof', state, filename, '打样下载失败');
 }
 
 /* ---------- 事件绑定 ---------- */
@@ -673,6 +779,11 @@ els.applyRepairBtn.addEventListener('click', applyRepairPlan);
 els.discardRepairBtn.addEventListener('click', discardRepairPlan);
 els.exportBtn.addEventListener('click', exportCsv);
 els.proofBtn.addEventListener('click', downloadProof);
+els.reprintPlanBtn.addEventListener('click', generateReprintList);
+els.reprintProofBtn.addEventListener('click', downloadReprintProof);
+els.reprintPagesInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') generateReprintList();
+});
 els.pagesInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') generate();
 });

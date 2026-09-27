@@ -23,6 +23,11 @@ const crypto = require('crypto');
  * 每张纸正反面共用同一 c：左版向右（+c）、右版向左（−c），均朝折线移动。
  * 未启用或上限为 0 时不产生任何补偿数据，结果与启用前完全一致；
  * 校验/导出时服务端按参数重算每张纸的补偿值，与提交数据不符即拒绝。
+ *
+ * 补印：解析需返工的成品页码表达式（逗号与连续区间，如 "2,5-7"），校验范围并去重，
+ * 要求当前拼版通过校验；按版位反查实体纸张（同张纸命中多页只列一次，跨帖按帖号及
+ * 帖内纸张序排列），并可生成仅含清单纸张的双面补印打样（正反面成对，沿用短边翻转
+ * 镜像、空白版位与爬移参数）。
  */
 
 const SIDES = ['front', 'back'];
@@ -795,43 +800,34 @@ body {
 `;
 
 /**
- * 生成双面打样独立 HTML；结构非法返回 null。
- * 固定 A4 横向，每张纸正反各一页，按帖号与帖内纸张顺序排列（正面页后紧跟背面页）。
+ * 单张纸的正反两个打样页（正面页后紧跟背面页）。
  * 正面页：左半 = 正面左版、右半 = 正面右版；
  * 背面页按短边翻转镜像排布：左半 = 反面右版、右半 = 反面左版，文字均保持正向
  * （正背面同一物理半区的页码画在打样页同一侧，透光对照即为同一张书叶的正反）。
- * 每面标出左右页码 / 空白版位、中央折线与四角对位标。
  * 启用爬移补偿时，仅页码内容按该纸张补偿量朝折线平移，折线与对位标保持原位。
+ * extraNote 为追加到页眉的说明（如补印命中页），可为 null。
  */
-function buildProofHtml(raw) {
-  const state = normalizeState(raw);
-  if (!state) return null;
-
-  const groups = state.mode === 'multi'
-    ? state.signatures
-    : [{ sig: null, sheets: state.sheets }];
-
-  const pagesHtml = [];
-  for (const g of groups) {
-    for (const s of g.sheets) {
-      const where = g.sig == null
-        ? `第 ${s.index} 张纸（共 ${g.sheets.length} 张）`
-        : `第 ${g.sig} 帖 · 第 ${s.index} 张纸（帖内共 ${g.sheets.length} 张）`;
-      const creepMm = state.creep ? s.creep : null;
-      const creepNote = state.creep
-        ? `爬移补偿 ${s.creep.toFixed(2)} mm：仅页码内容朝折线平移，折线与对位标不动`
-        : '';
-      // 正面：左半左版、右半右版
-      pagesHtml.push(proofPage(`${where} · 正面`, creepNote, s.front.left, s.front.right, creepMm));
-      // 背面：短边翻转，左右版位相对正面镜像（左半 = 反面右版、右半 = 反面左版），文字正向
-      pagesHtml.push(proofPage(`${where} · 反面（左右镜像）`, creepNote, s.back.right, s.back.left, creepMm));
-    }
+function sheetProofPages(state, g, s, extraNote) {
+  const where = g.sig == null
+    ? `第 ${s.index} 张纸（共 ${g.sheets.length} 张）`
+    : `第 ${g.sig} 帖 · 第 ${s.index} 张纸（帖内共 ${g.sheets.length} 张）`;
+  const creepMm = state.creep ? s.creep : null;
+  const notes = [];
+  if (state.creep) {
+    notes.push(`爬移补偿 ${s.creep.toFixed(2)} mm：仅页码内容朝折线平移，折线与对位标不动`);
   }
+  if (extraNote) notes.push(extraNote);
+  const headMid = notes.join('；');
+  return [
+    // 正面：左半左版、右半右版
+    proofPage(`${where} · 正面`, headMid, s.front.left, s.front.right, creepMm),
+    // 背面：短边翻转，左右版位相对正面镜像（左半 = 反面右版、右半 = 反面左版），文字正向
+    proofPage(`${where} · 反面（左右镜像）`, headMid, s.back.right, s.back.left, creepMm),
+  ];
+}
 
-  const title = state.mode === 'multi'
-    ? `双面打样 · 成品 ${state.pages} 页 · ${state.signatureCount} 帖 ${state.sheetCount} 张纸`
-    : `双面打样 · 成品 ${state.pages} 页 · ${state.sheetCount} 张纸`;
-
+/** 组装打样独立 HTML 文档（A4 横向，无需服务端即可打开打印） */
+function assembleProofDocument(title, pagesHtml) {
   return [
     '<!DOCTYPE html>',
     '<html lang="zh-CN">',
@@ -846,6 +842,33 @@ function buildProofHtml(raw) {
     '</html>',
     '',
   ].join('\n');
+}
+
+/**
+ * 生成双面打样独立 HTML；结构非法返回 null。
+ * 固定 A4 横向，每张纸正反各一页，按帖号与帖内纸张顺序排列（正面页后紧跟背面页）。
+ * 每面标出左右页码 / 空白版位、中央折线与四角对位标。
+ */
+function buildProofHtml(raw) {
+  const state = normalizeState(raw);
+  if (!state) return null;
+
+  const groups = state.mode === 'multi'
+    ? state.signatures
+    : [{ sig: null, sheets: state.sheets }];
+
+  const pagesHtml = [];
+  for (const g of groups) {
+    for (const s of g.sheets) {
+      pagesHtml.push(...sheetProofPages(state, g, s, null));
+    }
+  }
+
+  const title = state.mode === 'multi'
+    ? `双面打样 · 成品 ${state.pages} 页 · ${state.signatureCount} 帖 ${state.sheetCount} 张纸`
+    : `双面打样 · 成品 ${state.pages} 页 · ${state.sheetCount} 张纸`;
+
+  return assembleProofDocument(title, pagesHtml);
 }
 
 /** 生成 CSV（带 BOM，Excel 友好）；结构非法返回 null */
@@ -901,6 +924,105 @@ function buildCsv(raw) {
   return '﻿' + rows.map((r) => r.join(',')).join('\r\n') + '\r\n';
 }
 
+/* ---------- 补印 ---------- */
+
+/**
+ * 解析补印页码表达式：逗号（中英文）分隔的单页或连续区间（如 "2,5-7"，区间也支持 ~）。
+ * maxPage 为成品页数上限；页码须在 1~maxPage 内，结果升序、去重。
+ * 返回 { pages } 或 { error }（说明具体原因）。
+ */
+function parseReprintPages(spec, maxPage) {
+  if (typeof spec !== 'string' || spec.trim() === '') {
+    return { error: '请输入需返工的成品页码，支持逗号与连续区间（如 2,5-7）' };
+  }
+  const pages = new Set();
+  for (const part of spec.trim().split(/[,，]/)) {
+    const item = part.trim();
+    if (item === '') return { error: '页码表达式存在空项（多余的逗号）' };
+    const m = item.match(/^(\d+)(?:\s*[-~～－–—]\s*(\d+))?$/);
+    if (!m) return { error: `无法识别的页码表达式「${item}」，请使用页码或连续区间（如 2,5-7）` };
+    const from = Number(m[1]);
+    const to = m[2] === undefined ? from : Number(m[2]);
+    if (from > to) return { error: `连续区间「${item}」起点大于终点` };
+    for (let p = from; p <= to; p++) {
+      if (p < 1 || p > maxPage) {
+        return { error: `第 ${p} 页超出成品页范围 1~${maxPage}` };
+      }
+      pages.add(p);
+    }
+  }
+  return { pages: [...pages].sort((a, b) => a - b) };
+}
+
+/**
+ * 生成补印清单：按版位反查命中指定成品页的实体纸张。
+ * 要求当前拼版通过校验；同一张纸命中多个页只列一次（命中页合并展示）；
+ * 清单跨帖按帖号、帖内纸张序排列（单帖按纸张序）。
+ * 返回 null：拼版结构非法；
+ * 返回 { error, errors? }：拼版未通过校验（errors 附校验错误）或页码表达式非法；
+ * 成功：{ hitPages, sheetCount, sheets: [{ sig, index, hitPages, front, back, creep? }] }。
+ */
+function planReprint(raw, spec) {
+  const state = normalizeState(raw);
+  if (!state) return null;
+  const validation = validateImposition(raw);
+  if (!validation.valid) {
+    return { error: '当前拼版未通过校验，请先修复拼版错误再生成补印清单', errors: validation.errors };
+  }
+  const parsed = parseReprintPages(spec, state.pages);
+  if (parsed.error) return parsed;
+
+  const wanted = new Set(parsed.pages);
+  const groups = state.mode === 'multi' ? state.signatures : [{ sig: null, sheets: state.sheets }];
+  const sheets = [];
+  for (const g of groups) {
+    for (const s of g.sheets) {
+      const hitPages = [];
+      for (const side of SIDES) {
+        for (const pos of POSITIONS) {
+          const v = s[side][pos];
+          if (v !== null && wanted.has(v)) hitPages.push(v);
+        }
+      }
+      if (hitPages.length === 0) continue; // 同张纸命中多个页只列一次
+      const entry = {
+        sig: g.sig ?? null,
+        index: s.index,
+        hitPages: hitPages.sort((a, b) => a - b),
+        front: { left: s.front.left, right: s.front.right },
+        back: { left: s.back.left, right: s.back.right },
+      };
+      if (state.creep) entry.creep = s.creep;
+      sheets.push(entry);
+    }
+  }
+  return { hitPages: parsed.pages, sheetCount: sheets.length, sheets };
+}
+
+/**
+ * 生成补印打样独立 HTML：仅含补印清单纸张，每张纸正反面成对保留，
+ * 沿用既有短边翻转镜像、空白版位与爬移参数（与整本打样同一套排版逻辑）。
+ * 返回 null：拼版结构非法；{ error, errors? }：校验未通过或页码非法；成功：{ html, plan }。
+ */
+function buildReprintProofHtml(raw, spec) {
+  const plan = planReprint(raw, spec);
+  if (!plan || plan.error) return plan;
+  const state = normalizeState(raw); // planReprint 已校验通过，此处必为合法结构
+  const groups = state.mode === 'multi' ? state.signatures : [{ sig: null, sheets: state.sheets }];
+
+  const pagesHtml = [];
+  for (const item of plan.sheets) {
+    const g = state.mode === 'multi' ? groups[item.sig - 1] : groups[0];
+    const s = g.sheets[item.index - 1];
+    pagesHtml.push(...sheetProofPages(state, g, s, `补印命中页：${item.hitPages.join('、')}`));
+  }
+
+  const title = state.mode === 'multi'
+    ? `补印打样 · 成品 ${state.pages} 页 · ${state.signatureCount} 帖 · 补印 ${plan.sheetCount} 张纸`
+    : `补印打样 · 成品 ${state.pages} 页 · 补印 ${plan.sheetCount} 张纸`;
+  return { html: assembleProofDocument(title, pagesHtml), plan };
+}
+
 module.exports = {
   MAX_PAGES,
   MAX_SHEETS_PER_SIGNATURE,
@@ -920,4 +1042,7 @@ module.exports = {
   applyRepair,
   buildCsv,
   buildProofHtml,
+  parseReprintPages,
+  planReprint,
+  buildReprintProofHtml,
 };

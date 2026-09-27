@@ -262,6 +262,64 @@ button.primary:hover:not(:disabled) { background: var(--accent-dark); }
 .step-changes { margin-top: 2px; }
 .step-change { line-height: 1.6; }
 .repair-actions { display: flex; gap: 8px; }
+
+/* 补印面板 */
+.reprint-card h2 { margin: 0 0 10px; font-size: 16px; }
+.reprint-hint { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.reprint-row { display: flex; gap: 6px; margin-bottom: 8px; }
+.reprint-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.reprint-row button { padding: 7px 12px; white-space: nowrap; }
+#reprintInfo { font-size: 13px; }
+#reprintInfo p { margin: 0 0 8px; }
+#reprintInfo .muted { color: var(--muted); }
+.reprint-ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.reprint-error {
+  color: var(--bad);
+  background: var(--bad-bg);
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.reprint-list {
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+.reprint-list:empty { margin-bottom: 0; }
+.reprint-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.reprint-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.reprint-item-head .hit { color: var(--accent-dark); font-weight: 600; font-size: 12px; }
+.reprint-face { color: var(--ink); line-height: 1.7; }
+.reprint-creep { margin-top: 2px; font-size: 12px; color: #9a3412; }
+#reprintProofBtn { width: 100%; }
 #errors .ok {
   margin: 0;
   color: var(--ok);
