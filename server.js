@@ -11,6 +11,8 @@ const {
   applyRepair,
   buildCsv,
   buildProofHtml,
+  planReprint,
+  buildReprintProofHtml,
 } = require('./src/imposition');
 
 const app = express();
@@ -114,6 +116,38 @@ app.post('/api/export/proof', (req, res) => {
     : `imposition-proof-${req.body.totalPages}p.html`;
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.send(html);
+});
+
+/** 补印清单：校验页码输入与当前拼版，按帖号及帖内纸张序返回命中纸张（含命中页与正反四个版位） */
+app.post('/api/reprint/plan', (req, res) => {
+  const body = req.body || {};
+  const plan = planReprint(body.state, body.pages);
+  if (!plan) {
+    return res.status(400).json({ error: '拼版数据格式不正确' });
+  }
+  if (plan.error) {
+    return res.status(400).json({ error: plan.error, errors: plan.errors });
+  }
+  res.json(plan);
+});
+
+/** 补印打样：仅含清单纸张的双面打样 HTML（正反面成对、短边翻转镜像、沿用爬移参数）；输入无效或拼版有错时拒绝下载 */
+app.post('/api/reprint/proof', (req, res) => {
+  const body = req.body || {};
+  const result = buildReprintProofHtml(body.state, body.pages);
+  if (!result) {
+    return res.status(400).json({ error: '拼版数据格式不正确' });
+  }
+  if (result.error) {
+    return res.status(400).json({ error: result.error, errors: result.errors });
+  }
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  const st = body.state || {};
+  const filename = Array.isArray(st.signatures)
+    ? `reprint-proof-${st.totalPages}p-${st.signatureCount}sig.html`
+    : `reprint-proof-${st.totalPages}p.html`;
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(result.html);
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));

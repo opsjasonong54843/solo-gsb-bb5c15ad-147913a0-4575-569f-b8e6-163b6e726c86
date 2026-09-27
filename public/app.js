@@ -24,6 +24,11 @@ const els = {
   repairSteps: document.getElementById('repairSteps'),
   applyRepairBtn: document.getElementById('applyRepairBtn'),
   discardRepairBtn: document.getElementById('discardRepairBtn'),
+  reprintInput: document.getElementById('reprintInput'),
+  reprintPlanBtn: document.getElementById('reprintPlanBtn'),
+  reprintProofBtn: document.getElementById('reprintProofBtn'),
+  reprintInfo: document.getElementById('reprintInfo'),
+  reprintList: document.getElementById('reprintList'),
   summary: document.getElementById('summary'),
   sheets: document.getElementById('sheets'),
   errors: document.getElementById('errors'),
@@ -46,6 +51,7 @@ let mode = 'swap'; // 操作模式：'swap' | 'edit'
 let selected = null; // 交换模式下已选中的版位 { sig, sheet, side, pos }
 let validateTimer = null;
 let repairPlan = null; // 当前修复方案 { steps, fingerprint, baseJson, stale }
+let reprintData = null; // 最近一次成功的补印清单（用于控制补印打样下载按钮）
 
 async function api(path, body) {
   const res = await fetch(path, {
@@ -110,6 +116,7 @@ function setLayout(next) {
     els.exportBtn.disabled = true;
     els.proofBtn.disabled = true;
     els.errors.innerHTML = '<p class="muted">已切换拼版模式，请重新点击「生成拼版」。</p>';
+    refreshReprint();
   }
 }
 
@@ -420,6 +427,7 @@ async function validateNow() {
     els.exportBtn.disabled = true;
     els.proofBtn.disabled = true;
   }
+  refreshReprint();
 }
 
 function renderErrors(result) {
@@ -624,6 +632,110 @@ async function applyRepairPlan() {
   }
 }
 
+/* ---------- 补印 ---------- */
+
+/** 生成补印清单：服务端校验页码输入与当前拼版，按帖号与帖内纸张序返回命中纸张 */
+async function generateReprintPlan() {
+  if (!state) {
+    reprintData = null;
+    els.reprintProofBtn.disabled = true;
+    renderReprintMessage('muted', '请先生成拼版。');
+    return;
+  }
+  try {
+    const data = await api('/api/reprint/plan', { state, pages: els.reprintInput.value });
+    reprintData = data;
+    renderReprintPlan(data);
+  } catch (e) {
+    reprintData = null;
+    renderReprintMessage('reprint-err', e.message);
+  }
+  els.reprintProofBtn.disabled = !reprintData || reprintData.sheetCount === 0;
+}
+
+function renderReprintMessage(cls, text) {
+  els.reprintInfo.innerHTML = '';
+  els.reprintList.innerHTML = '';
+  const p = document.createElement('p');
+  p.className = cls;
+  p.textContent = text;
+  els.reprintInfo.appendChild(p);
+}
+
+/** 渲染补印清单：每张命中纸列出命中页与正反四个版位（同张纸命中多页只列一次） */
+function renderReprintPlan(data) {
+  els.reprintInfo.innerHTML = '';
+  const p = document.createElement('p');
+  p.className = 'reprint-ok';
+  p.textContent = `需补印 ${data.pages.length} 页（第 ${data.pages.join('、')} 页），涉及 ${data.sheetCount} 张纸：`;
+  els.reprintInfo.appendChild(p);
+
+  els.reprintList.innerHTML = '';
+  for (const s of data.sheets) {
+    const li = document.createElement('li');
+    li.className = 'reprint-sheet';
+
+    const head = document.createElement('div');
+    head.className = 'reprint-sheet-head';
+    const where = document.createElement('strong');
+    where.textContent = s.sig == null ? `第 ${s.sheet} 张纸` : `第 ${s.sig} 帖 · 第 ${s.sheet} 张纸`;
+    const hit = document.createElement('span');
+    hit.className = 'reprint-hit';
+    hit.textContent = `命中：第 ${s.hitPages.join('、')} 页`;
+    head.append(where, hit);
+
+    const slots = document.createElement('div');
+    slots.className = 'reprint-slots';
+    for (const side of ['front', 'back']) {
+      const row = document.createElement('span');
+      row.textContent =
+        `${SIDE_LABEL[side]}：左版 ${valueLabel(s[side].left)} · 右版 ${valueLabel(s[side].right)}`;
+      slots.appendChild(row);
+    }
+    li.append(head, slots);
+    els.reprintList.appendChild(li);
+  }
+}
+
+/** 拼版变化后同步补印区：页码输入非空时自动重算清单，否则清空并禁用下载 */
+function refreshReprint() {
+  if (!state || els.reprintInput.value.trim() === '') {
+    reprintData = null;
+    els.reprintProofBtn.disabled = true;
+    els.reprintList.innerHTML = '';
+    els.reprintInfo.innerHTML = state ? '' : '<p class="muted">请先生成拼版。</p>';
+    return;
+  }
+  generateReprintPlan();
+}
+
+/** 下载补印打样：仅含清单纸张的双面打样（服务端按当前拼版与页码重新校验，有错即拒绝） */
+async function downloadReprintProof() {
+  if (!state || !reprintData) return;
+  const res = await fetch('/api/reprint/proof', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state, pages: els.reprintInput.value }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || '补印打样下载失败');
+    generateReprintPlan(); // 拼版可能已变化：刷新清单与下载按钮状态
+    return;
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = layout === 'multi'
+    ? `reprint-proof-${state.totalPages}p-${state.signatureCount}sig.html`
+    : `reprint-proof-${state.totalPages}p.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /* ---------- 导出 ---------- */
 
 /** 下载结果文件（CSV / 打样 HTML）的通用逻辑 */
@@ -673,6 +785,20 @@ els.applyRepairBtn.addEventListener('click', applyRepairPlan);
 els.discardRepairBtn.addEventListener('click', discardRepairPlan);
 els.exportBtn.addEventListener('click', exportCsv);
 els.proofBtn.addEventListener('click', downloadProof);
+els.reprintPlanBtn.addEventListener('click', generateReprintPlan);
+els.reprintProofBtn.addEventListener('click', downloadReprintProof);
+els.reprintInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') generateReprintPlan();
+});
+els.reprintInput.addEventListener('input', () => {
+  // 页码输入已修改：旧清单失效，需重新生成后才能下载
+  reprintData = null;
+  els.reprintProofBtn.disabled = true;
+  els.reprintList.innerHTML = '';
+  els.reprintInfo.innerHTML = els.reprintInput.value.trim()
+    ? '<p class="muted">页码已修改，请点击「生成补印清单」。</p>'
+    : '';
+});
 els.pagesInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') generate();
 });
